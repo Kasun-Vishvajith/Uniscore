@@ -16,6 +16,14 @@ except ImportError:
 
 
 # ANSI Escape Colors and 24-bit TrueColor Helpers
+def safe_exit(code=0):
+    """Wait for user input before exiting to prevent terminal closing immediately."""
+    try:
+        input(f"\n{CLR_DIM}Press Enter to exit...{CLR_RESET}")
+    except (KeyboardInterrupt, EOFError):
+        pass
+    sys.exit(code)
+
 def hex_color(hex_str: str) -> str:
     h = hex_str.lstrip('#')
     r, g, b = tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
@@ -38,9 +46,11 @@ CLR_ORANGE = hex_color("#ff9e64")
 CLR_SEPARATOR = hex_color("#3a3f5c")
 
 def get_display_width(s: str) -> int:
-    """Calculate the display width of a string in a terminal, accounting for emojis and ANSI escapes."""
+    """Calculate the display width of a string in a terminal, accounting for emojis, hyperlinks, and ANSI escapes."""
     ansi_escape = re.compile(r'\033\[[0-9;]*m')
+    hyperlink_escape = re.compile(r'\033\]8;.*?\033\\')
     clean_s = ansi_escape.sub("", s)
+    clean_s = hyperlink_escape.sub("", clean_s)
     width = 0
     for char in clean_s:
         eaw = unicodedata.east_asian_width(char)
@@ -591,6 +601,7 @@ def main():
         print(box_top(WIDTH))
         print(box_row(f"{CLR_CYAN}{CLR_BOLD}Welcome to Uniscore CLI!{CLR_RESET}", WIDTH))
         print(box_row(f"{CLR_DIM}University of Colombo · Uniscore V1.0{CLR_RESET}", WIDTH))
+        print(box_row(f"{CLR_DIM}Build by Kasun Vishvajith{CLR_RESET}", WIDTH))
         print(box_bot(WIDTH))
         print()
 
@@ -709,7 +720,7 @@ def main():
                 if loop_choice == "2":
                     print(box_row(f"{CLR_RED}Exiting Uniscore. Goodbye!{CLR_RESET}", WIDTH))
                     print(box_bot(WIDTH))
-                    sys.exit(1)
+                    safe_exit(1)
                 else:
                     print(box_row(f"{CLR_CYAN}Restarting session...{CLR_RESET}", WIDTH))
                     print(box_bot(WIDTH))
@@ -732,7 +743,7 @@ def main():
                 print()
                 print(box_row_left(f"{CLR_RED}❌  Failed to reach SIS result portal.{CLR_RESET}", WIDTH))
                 print(box_bot(WIDTH))
-                sys.exit(1)
+                safe_exit(1)
 
             # 3. Parsing
             rows = parse_results(r.text)
@@ -742,7 +753,7 @@ def main():
                 print(box_bot(WIDTH))
                 with open("debug_page.html", "w", encoding="utf-8") as f:
                     f.write(r.text)
-                sys.exit(1)
+                safe_exit(1)
 
             sys.stdout.write(f"\r{box_row_left(f'{CLR_GREEN}✓{CLR_RESET}  Retrieved and compiled {CLR_CYAN}{len(rows)}{CLR_RESET} course records.', WIDTH)}\n")
             sys.stdout.flush()
@@ -862,10 +873,11 @@ def main():
             "View repeated / resit courses",
             "View outstanding medicals",
             "Sign in with a different account",
+            "Visit Developer's Portfolio",
             "Exit Uniscore",
         ]
-        # Lines drawn by draw_loop_menu: question + blank + 4 options + border = 7
-        _LOOP_LINES = 7
+        # Lines drawn by draw_loop_menu: question + blank + 5 options + border = 8
+        _LOOP_LINES = 8
 
         session_action = None
         while session_action is None:
@@ -913,8 +925,8 @@ def main():
                 print(box_mid(WIDTH))
 
                 loop_choice = ""
-                while loop_choice not in ("1", "2", "3", "4"):
-                    loop_choice = input(f"  {CLR_CYAN}\u276f {CLR_RESET}{CLR_WHITE}Choose option (1-4): {CLR_RESET}").strip()
+                while loop_choice not in ("1", "2", "3", "4", "5"):
+                    loop_choice = input(f"  {CLR_CYAN}\u276f {CLR_RESET}{CLR_WHITE}Choose option (1-5): {CLR_RESET}").strip()
 
             # \u2500\u2500 Handle choice \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
             if loop_choice == "1":
@@ -966,7 +978,15 @@ def main():
 
             elif loop_choice == "3":
                 session_action = "restart"
-            else:  # "4"
+            elif loop_choice == "4":
+                import webbrowser
+                try:
+                    webbrowser.open("https://kasun-vishvajith.github.io/Portfolio/")
+                    print(box_row_left(f"{CLR_GREEN}✓{CLR_RESET}  Opening portfolio in your browser...", WIDTH))
+                except Exception:
+                    print(box_row_left(f"{CLR_RED}⚠  Could not open browser. Link: https://kasun-vishvajith.github.io/Portfolio/{CLR_RESET}", WIDTH))
+                print(box_mid(WIDTH))
+            else:  # "5"
                 session_action = "exit"
 
         if session_action == "exit":
@@ -974,7 +994,7 @@ def main():
             print(box_row(f"{CLR_GREEN}Done!{CLR_RESET} {CLR_DIM}Thank you for using Uniscore. Goodbye! \U0001f44b{CLR_RESET}", WIDTH))
             print(box_bot(WIDTH))
             print()
-            break
+            safe_exit(0)
         else:
             # Re-enter: inform user, close box, loop back to outer while
             print(box_row(f"{CLR_CYAN}Resetting console and starting new session...{CLR_RESET}", WIDTH))
