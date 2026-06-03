@@ -6,6 +6,17 @@ A professional command-line interface (CLI) academic dashboard and grade scraper
 
 ## 🌟 Key Features
 
+- **Multi-Faculty & Campus Support**: Support for all major UoC faculties and campuses:
+  - Faculty of Science
+  - Faculty of Arts
+  - Faculty of Management and Finance
+  - Faculty of Law
+  - Sri Palee Campus
+  - Faculty of Technology
+  - Faculty of Nursing
+  - Faculty of Education (Arts)
+  - Faculty of Education (Direct Intake)
+- **Interactive Faculty Selector**: Seamlessly select your faculty/campus on startup using Left/Right arrow keys, styled with the faculty's official brand colors.
 - **Secure Portal Login**: Authenticate directly with the UoC SIS portal. Credentials are processed locally in memory.
 - **Visual Academic Dashboard**: Rendered with custom 24-bit TrueColor ANSI frames and progress trackers.
 - **Automated GPA Calculation**: Instantly parses level-by-level semester results and computes Cumulative GPA.
@@ -14,7 +25,7 @@ A professional command-line interface (CLI) academic dashboard and grade scraper
   - Identifies unresolved medical (MC) course units.
   - Separate tracking for non-GPA enhancement courses.
   - Visualizes academic grade distributions via colored, gradient-styled horizontal bar charts.
-- **Data Export**: Saves your raw results to `results.csv` and a readable summary to `summary.txt`.
+- **Data Export**: Saves your raw results to `[Registration_No].csv` and a readable summary to `[Registration_No].txt` inside your Downloads folder.
 
 ---
 
@@ -26,7 +37,7 @@ A professional command-line interface (CLI) academic dashboard and grade scraper
 
 ### Run from Source
 ```bash
-pip install requests beautifulsoup4 pillow
+pip install requests beautifulsoup4
 python uniscore.py
 ```
 Or run **`Run-Uniscore.bat`**.
@@ -34,7 +45,7 @@ Or run **`Run-Uniscore.bat`**.
 ---
 
 ## 🔒 Privacy & Safety Guarantee
-Your credentials and scraped grades are handled strictly locally and transmitted securely over SSL only to the official University of Colombo Student Information System (`https://sis.cmb.ac.lk/sci`). No personal data is stored or sent to any third-party servers.
+Your credentials and scraped grades are handled strictly locally and transmitted securely over SSL only to the official University of Colombo Student Information System portals (`https://sis.cmb.ac.lk/*`). No personal data is stored or sent to any third-party servers.
 
 ---
 
