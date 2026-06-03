@@ -80,7 +80,7 @@ def get_display_width(s: str) -> int:
             # Box-drawing characters and Block Elements (U+2500 to U+259F) should be counted as 1 cell
             if 0x2500 <= ord(char) <= 0x259f:
                 width += 1
-            elif char in ("✓", "✔", "·", "✗", "✘"):
+            elif char in ("✓", "✔", "·", "✗", "✘", "◀", "▶"):
                 width += 1
             else:
                 width += 2
@@ -179,6 +179,19 @@ def get_masked_password(prompt="Password: ") -> str:
         return getpass.getpass(prompt)
 
 
+FACULTIES = [
+    {"name": "Faculty of Science", "url": "https://sis.cmb.ac.lk/sci", "color": "#0082D8"},
+    {"name": "Faculty of Arts", "url": "https://sis.cmb.ac.lk/arts", "color": "#D53F8C"},
+    {"name": "Faculty of Management and Finance", "url": "https://sis.cmb.ac.lk/mgmt", "color": "#E53E3E"},
+    {"name": "Faculty of Law", "url": "https://sis.cmb.ac.lk/law", "color": "#00A3C4"},
+    {"name": "Sri Palee Campus", "url": "https://sis.cmb.ac.lk/spc", "color": "#ED8936"},
+    {"name": "Faculty of Technology", "url": "https://sis.cmb.ac.lk/tech", "color": "#4299E1"},
+    {"name": "Faculty of Nursing", "url": "https://sis.cmb.ac.lk/nur", "color": "#E04F5F"},
+    {"name": "Faculty of Education (Arts)", "url": "https://sis.cmb.ac.lk/arts_edu", "color": "#38A169"},
+    {"name": "Faculty of Education (Direct Intake)", "url": "https://sis.cmb.ac.lk/edu", "color": "#9F7AEA"}
+]
+
+# Default values
 BASE_URL = "https://sis.cmb.ac.lk/sci"
 LOGIN_URL = f"{BASE_URL}/index"
 AJAX_LOGIN = f"{BASE_URL}/ajax.php?req=login"
@@ -191,6 +204,17 @@ HEADERS = {
     "Referer": LOGIN_URL,
 }
 
+def update_faculty_urls(fac_dict):
+    global BASE_URL, LOGIN_URL, AJAX_LOGIN, LOGOUT_URL, RESULTS_URL, HEADERS
+    BASE_URL = fac_dict["url"]
+    LOGIN_URL = f"{BASE_URL}/index"
+    AJAX_LOGIN = f"{BASE_URL}/ajax.php?req=login"
+    LOGOUT_URL = f"{BASE_URL}/ajax.php?req=logout"
+    RESULTS_URL = f"{BASE_URL}/results/result_sheet"
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
+        "Referer": LOGIN_URL,
+    }
 
 def login(session: requests.Session, username: str, password: str) -> tuple[bool, str]:
     """Log in and return (True, "") on success, or (False, error_msg) on failure."""
@@ -212,12 +236,14 @@ def login(session: requests.Session, username: str, password: str) -> tuple[bool
     soup2 = BeautifulSoup(r.text, "html.parser")
     title = soup2.title.string if soup2.title else ""
 
-    if "Faculty of Science | Student Information System" in title:
+    # Allow matches for Student Information System titles on other faculties
+    if "Student Information System" in title or "Student Info" in title or "SIS" in title or any(f["name"] in title for f in FACULTIES):
         return True, ""
 
     err = soup2.find(class_="error")
     err_text = err.get_text(strip=True) if err else "Invalid username or password."
     return False, err_text
+
 
 
 def parse_results(html: str) -> list[dict]:
@@ -280,26 +306,26 @@ def center_line(content: str, width: int, fill: str = " ") -> str:
     return fill * left + content + fill * right
 
 
-def box_top(width: int) -> str:
-    return f"{CLR_SEPARATOR}┌{'─' * (width - 2)}┐{CLR_RESET}"
+def box_top(width: int, color=CLR_SEPARATOR) -> str:
+    return f"{color}┌{'─' * (width - 2)}┐{CLR_RESET}"
 
-def box_mid(width: int) -> str:
-    return f"{CLR_SEPARATOR}├{'─' * (width - 2)}┤{CLR_RESET}"
+def box_mid(width: int, color=CLR_SEPARATOR) -> str:
+    return f"{color}├{'─' * (width - 2)}┤{CLR_RESET}"
 
-def box_bot(width: int) -> str:
-    return f"{CLR_SEPARATOR}└{'─' * (width - 2)}┘{CLR_RESET}"
+def box_bot(width: int, color=CLR_SEPARATOR) -> str:
+    return f"{color}└{'─' * (width - 2)}┘{CLR_RESET}"
 
-def box_row(content: str, width: int) -> str:
+def box_row(content: str, width: int, color=CLR_SEPARATOR) -> str:
     """Print a bordered row with content inside, auto-centered."""
     inner_width = width - 4  # 2 for border chars + 2 for spaces
     centred = center_line(content, inner_width)
-    return f"{CLR_SEPARATOR}│{CLR_RESET} {centred} {CLR_SEPARATOR}│{CLR_RESET}"
+    return f"{color}│{CLR_RESET} {centred} {color}│{CLR_RESET}"
 
-def box_row_left(content: str, width: int) -> str:
+def box_row_left(content: str, width: int, color=CLR_SEPARATOR) -> str:
     """Print a bordered row, left-padded with 2 spaces."""
     visible_len = get_display_width(content)
     pad = max(0, width - 6 - visible_len)
-    return f"{CLR_SEPARATOR}│{CLR_RESET}  {content}{' ' * pad}  {CLR_SEPARATOR}│{CLR_RESET}"
+    return f"{color}│{CLR_RESET}  {content}{' ' * pad}  {color}│{CLR_RESET}"
 
 def box_row_split(left_content: str, right_content: str, width: int) -> str:
     """Print a bordered row split left/right with a mid divider."""
@@ -717,6 +743,76 @@ def find_medical_courses(rows: list[dict]) -> list[dict]:
     return result
 
 
+def print_grade_distribution(rows: list[dict], width: int = 90):
+    """
+    Calculate and print a beautiful color-coded horizontal bar chart
+    representing the distribution of standard course grades.
+    """
+    resolved_rows = resolve_course_attempts(rows)
+    distribution = defaultdict(int)
+    for row in resolved_rows:
+        if row.get("_is_voided"):
+            continue
+        section = row.get("Section", "")
+        if "enhancement" in section.lower() or "enchancement" in section.lower():
+            continue
+        grade = row.get("Grade", "").strip().upper()
+        if not grade or grade in ('--', ''):
+            continue
+        distribution[grade] += 1
+
+    ordered_grades = ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D+', 'D', 'E']
+    total_count = sum(distribution[g] for g in ordered_grades)
+
+    GRADE_COLORS = {
+        'A+': hex_color("#10b981"),
+        'A':  hex_color("#22c55e"),
+        'A-': hex_color("#84cc16"),
+        'B+': hex_color("#a3e635"),
+        'B':  hex_color("#facc15"),
+        'B-': hex_color("#f59e0b"),
+        'C+': hex_color("#fb923c"),
+        'C':  hex_color("#f97316"),
+        'C-': hex_color("#ea580c"),
+        'D+': hex_color("#ef4444"),
+        'D':  hex_color("#dc2626"),
+        'E':  hex_color("#b91c1c")
+    }
+
+    print(box_row(f"{CLR_PURPLE}{CLR_BOLD}📊  GRADE DISTRIBUTION{CLR_RESET}", width))
+    print(box_mid(width))
+
+    max_count = max(distribution[g] for g in ordered_grades)
+    max_bar_len = 30
+
+    hdr = f"{CLR_DIM}{'Grade':<6}  {'Count':<6}  {'Distribution'}{CLR_RESET}"
+    print(box_row_left(hdr, width))
+    sep = f"{CLR_SEPARATOR}{'\u2500'*6}  {'\u2500'*6}  {'\u2500'*32}{CLR_RESET}"
+    print(box_row_left(sep, width))
+
+    for grade in ordered_grades:
+        count = distribution[grade]
+        color = GRADE_COLORS[grade]
+
+        bar_len = int(round((count / max_count) * max_bar_len)) if max_count > 0 else 0
+        bar_len = max(0, min(max_bar_len, bar_len))
+
+        filled = f"{color}{'█' * bar_len}{CLR_RESET}"
+        empty = f"{CLR_SEPARATOR}{'░' * (max_bar_len - bar_len)}{CLR_RESET}"
+        bar_str = f"{CLR_SEPARATOR}▕{CLR_RESET}{filled}{empty}{CLR_SEPARATOR}▏{CLR_RESET}"
+
+        grade_lbl = f"{color}{CLR_BOLD}{grade:<6}{CLR_RESET}"
+        count_val = str(count) if count > 0 else "-"
+        count_lbl = f"{CLR_WHITE}{count_val:<6}{CLR_RESET}"
+
+        row_content = f"{grade_lbl}  {count_lbl}  {bar_str}"
+        print(box_row_left(row_content, width))
+
+    print(box_mid(width))
+    summary_str = f"{CLR_WHITE}Total Graded Courses: {CLR_CYAN}{total_count}{CLR_RESET}"
+    print(box_row_left(summary_str, width))
+
+
 def main():
     init_ansi()
     WIDTH = 90
@@ -736,6 +832,67 @@ def main():
         print(box_row(f"{CLR_DIM}Build by Kasun Vishvajith{CLR_RESET}", WIDTH))
         print(box_bot(WIDTH))
         print()
+
+        # Faculty Selector Box
+        fac_idx = 0
+        if use_interactive:
+            def draw_faculty_selector(idx):
+                fac = FACULTIES[idx]
+                color = hex_color(fac["color"])
+                sys.stdout.write(box_top(WIDTH, color) + "\n")
+                sys.stdout.write(box_row(f"{color}{CLR_BOLD}🏫  SELECT YOUR FACULTY{CLR_RESET}", WIDTH, color) + "\n")
+                sys.stdout.write(box_mid(WIDTH, color) + "\n")
+                sys.stdout.write(box_row(f"{CLR_DIM}Use Left/Right arrow keys to scroll. Press Enter to select.{CLR_RESET}", WIDTH, color) + "\n")
+                sys.stdout.write(box_row("", WIDTH, color) + "\n")
+                
+                selector_text = f"{color}◀   {fac['name']}   ▶{CLR_RESET}"
+                sys.stdout.write(box_row(selector_text, WIDTH, color) + "\n")
+                sys.stdout.write(box_row("", WIDTH, color) + "\n")
+                sys.stdout.write(box_bot(WIDTH, color) + "\n")
+                sys.stdout.flush()
+
+            draw_faculty_selector(fac_idx)
+            while True:
+                ch = msvcrt.getch()
+                if ch in (b'\r', b'\n'):
+                    break
+                elif ch == b'\xe0':
+                    ch2 = msvcrt.getch()
+                    if ch2 == b'K':  # Left Arrow
+                        fac_idx = (fac_idx - 1) % len(FACULTIES)
+                    elif ch2 == b'M':  # Right Arrow
+                        fac_idx = (fac_idx + 1) % len(FACULTIES)
+                    elif ch2 == b'H':  # Up Arrow
+                        fac_idx = (fac_idx - 1) % len(FACULTIES)
+                    elif ch2 == b'P':  # Down Arrow
+                        fac_idx = (fac_idx + 1) % len(FACULTIES)
+                    
+                    sys.stdout.write("\033[8A")
+                    draw_faculty_selector(fac_idx)
+            
+            selected_faculty = FACULTIES[fac_idx]
+            update_faculty_urls(selected_faculty)
+        else:
+            print(box_top(WIDTH))
+            print(box_row(f"{CLR_CYAN}{CLR_BOLD}🏫  SELECT YOUR FACULTY / CAMPUS{CLR_RESET}", WIDTH))
+            print(box_mid(WIDTH))
+            for idx, fac in enumerate(FACULTIES):
+                print(box_row_left(f"  {CLR_CYAN}[{idx+1}]{CLR_RESET}  {CLR_WHITE}{fac['name']}{CLR_RESET}", WIDTH))
+            print(box_mid(WIDTH))
+            
+            choice = ""
+            while not choice.isdigit() or not (1 <= int(choice) <= len(FACULTIES)):
+                choice = input(f"  {CLR_CYAN}❯ {CLR_RESET}{CLR_WHITE}Choose option (1-{len(FACULTIES)}), default 1: {CLR_RESET}").strip()
+                if not choice:
+                    choice = "1"
+                    break
+            fac_idx = int(choice) - 1
+            selected_faculty = FACULTIES[fac_idx]
+            update_faculty_urls(selected_faculty)
+            print(box_row(f"{CLR_GREEN}Selected: {selected_faculty['name']}{CLR_RESET}", WIDTH))
+            print(box_bot(WIDTH))
+        print()
+
 
         # Sign-In Box
         print(box_top(WIDTH))
@@ -1014,12 +1171,13 @@ def main():
         loop_options = [
             "View Repeated",
             "View Medicals",
+            "View Grade Distribution",
             "Sign in with a different account",
             "Visit Developer's Portfolio",
             "Exit Uniscore",
         ]
-        # Lines drawn by draw_loop_menu: question + blank + 5 options + border = 8
-        _LOOP_LINES = 8
+        # Lines drawn by draw_loop_menu: question + blank + 6 options + border = 9
+        _LOOP_LINES = 9
 
         session_action = None
         while session_action is None:
@@ -1067,8 +1225,8 @@ def main():
                 print(box_mid(WIDTH))
 
                 loop_choice = ""
-                while loop_choice not in ("1", "2", "3", "4", "5"):
-                    loop_choice = input(f"  {CLR_CYAN}\u276f {CLR_RESET}{CLR_WHITE}Choose option (1-5): {CLR_RESET}").strip()
+                while loop_choice not in ("1", "2", "3", "4", "5", "6"):
+                    loop_choice = input(f"  {CLR_CYAN}\u276f {CLR_RESET}{CLR_WHITE}Choose option (1-6): {CLR_RESET}").strip()
 
             # ── Handle choice ─────────────────────────────────────────────────────
             if loop_choice == "1":
@@ -1184,8 +1342,12 @@ def main():
                 print(box_mid(WIDTH))
 
             elif loop_choice == "3":
-                session_action = "restart"
+                # Grade Distribution — printed inline inside open box
+                print_grade_distribution(rows, WIDTH)
+                print(box_mid(WIDTH))
             elif loop_choice == "4":
+                session_action = "restart"
+            elif loop_choice == "5":
                 import webbrowser
                 try:
                     webbrowser.open("https://kasun-vishvajith.github.io/Portfolio/")
@@ -1193,7 +1355,7 @@ def main():
                 except Exception:
                     print(box_row_left(f"{CLR_RED}⚠  Could not open browser. Link: https://kasun-vishvajith.github.io/Portfolio/{CLR_RESET}", WIDTH))
                 print(box_mid(WIDTH))
-            else:  # "5"
+            else:  # "6"
                 session_action = "exit"
 
         if session_action == "exit":
