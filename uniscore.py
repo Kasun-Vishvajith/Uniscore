@@ -14,6 +14,23 @@ try:
 except ImportError:
     HAS_MSVCRT = False
  
+SHORTCUT_FACULTY = b'\x06'  # Ctrl+F
+SHORTCUT_LOGIN   = b'\x0c'  # Ctrl+L
+START_AT_LOGIN   = False
+
+
+class NavigationRequest(Exception):
+    def __init__(self, target: str):
+        self.target = target
+        super().__init__(target)
+
+
+def handle_global_shortcut(ch: bytes):
+    if ch == SHORTCUT_FACULTY:
+        raise NavigationRequest("faculty")
+    if ch == SHORTCUT_LOGIN:
+        raise NavigationRequest("login")
+
  
 # ── ANSI / TrueColor helpers ──────────────────────────────────────────────────
  
@@ -172,6 +189,7 @@ def get_masked_password(prompt="Password: ") -> str:
         password = []
         while True:
             ch = msvcrt.getch()
+            handle_global_shortcut(ch)
             if ch in (b'\r', b'\n'):
                 sys.stdout.write('\n')
                 sys.stdout.flush()
@@ -196,6 +214,38 @@ def get_masked_password(prompt="Password: ") -> str:
     except ImportError:
         import getpass
         return getpass.getpass(prompt)
+
+
+def read_console_line(prompt: str = "") -> str:
+    if not HAS_MSVCRT:
+        return input(prompt)
+
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    chars = []
+    while True:
+        ch = msvcrt.getch()
+        handle_global_shortcut(ch)
+        if ch in (b'\r', b'\n'):
+            sys.stdout.write('\n')
+            sys.stdout.flush()
+            return "".join(chars)
+        if ch == b'\x03':
+            raise KeyboardInterrupt
+        if ch == b'\x08':
+            if chars:
+                chars.pop()
+                sys.stdout.write('\b \b')
+                sys.stdout.flush()
+            continue
+        try:
+            char = ch.decode('utf-8')
+        except UnicodeDecodeError:
+            continue
+        if ord(char) >= 32:
+            chars.append(char)
+            sys.stdout.write(char)
+            sys.stdout.flush()
  
  
 # ── Faculty config ────────────────────────────────────────────────────────────
@@ -512,67 +562,45 @@ def _attempt_status_text(det: dict, mode: str) -> str:
         return f"✗ Resit Attempt{v}"
  
  
-def _summary_outcome(last_cls: str, last_grade: str, n_att: int) -> str:
-    """
-    Build the final outcome summary line shown below each course block.
-    Format:  OUTCOME LABEL  ·  [GRADE]  ·  N attempt(s)
-    Uses a dimmed separator line above it and bold outcome text.
-    """
-    if last_cls == 'pass':
-        clr   = CLR_GREEN
-        label = "✓  Passed"
-    elif last_cls in ('fail', 'absent'):
-        clr   = CLR_RED
-        label = "✗  Still Failing"
-    elif last_cls == 'medical':
-        clr   = CLR_YELLOW
-        label = "⏳  Medical Outstanding"
-    else:
-        clr   = CLR_YELLOW
-        label = "⏳  Pending"
- 
-    att_word = "attempt" if n_att == 1 else "attempts"
-    grade_pill = f"{clr}❮{last_grade}❯{CLR_RESET}"
-    outcome    = f"{clr}{CLR_BOLD}{label}{CLR_RESET}"
-    att_lbl    = f"{CLR_DIM}{n_att} {att_word}{CLR_RESET}"
-    dot        = f"{CLR_SEPARATOR} · {CLR_RESET}"
-    return f"    {CLR_SEPARATOR}╘══{CLR_RESET}  {outcome}{dot}{grade_pill}{dot}{att_lbl}"
+def truncate_visible(text: str, target_width: int) -> str:
+    """Trim text to a visible-width column without breaking ANSI padding."""
+    if get_display_width(text) <= target_width:
+        return pad_visible(text, target_width)
+    marker = "..."
+    limit = max(0, target_width - get_display_width(marker))
+    out = ""
+    width = 0
+    for char in text:
+        char_width = get_display_width(char)
+        if width + char_width > limit:
+            break
+        out += char
+        width += char_width
+    return pad_visible(out + marker, target_width)
  
  
 def _print_course_block(course: dict, mode: str, width: int):
     """
-    Render one course block:
-      CODE   Full Title
-        ├─  1st  Status label        [grade]
-        ├─  2nd  Status label        [grade]
-        └─  3rd  Status label        [grade]
-      ╘══  OUTCOME  ·  ❮grade❯  ·  N attempts
+    Render one aligned course block with one row per attempt.
     """
-    details   = course['details']
-    last_cls  = course['last_cls']
-    last_grade = course['last_grade']
-    n_att     = course['attempts']
+    code_w, title_w, att_w, status_w, result_w = 8, 27, 7, 28, 6
+    details = course['details']
  
-    # ── Course title row ───────────────────────────────────────────────────
-    code_clr = CLR_GREEN if last_cls == 'pass' else \
-               CLR_RED   if last_cls in ('fail', 'absent') else CLR_YELLOW
-    code_s   = f"{code_clr}{CLR_BOLD}{course['code']:<8}{CLR_RESET}"
-    title_s  = f"{CLR_WHITE}{CLR_BOLD}{course['title']}{CLR_RESET}"
-    print(box_row_left(f"{code_s}  {title_s}", width))
- 
-    # ── Attempt rows ───────────────────────────────────────────────────────
     for i, det in enumerate(details):
-        is_last   = (i == len(details) - 1)
-        connector = f"{CLR_SEPARATOR}└─{CLR_RESET}" if is_last else f"{CLR_SEPARATOR}├─{CLR_RESET}"
-        att_s     = f"{CLR_DIM}{get_ordinal(det['attempt_no']):>3}{CLR_RESET}"
+        first_row = (i == 0)
+        code_clr = CLR_GREEN if course['last_cls'] == 'pass' else \
+                   CLR_RED   if course['last_cls'] in ('fail', 'absent') else CLR_YELLOW
+        code_txt  = course['code'] if first_row else ""
+        title_txt = course['title'] if first_row else ""
+        code_s    = f"{code_clr}{CLR_BOLD}{pad_visible(code_txt, code_w)}{CLR_RESET}" if first_row else " " * code_w
+        title_s   = f"{CLR_WHITE}{CLR_BOLD}{truncate_visible(title_txt, title_w)}{CLR_RESET}" if first_row else " " * title_w
+        att_s     = f"{CLR_DIM}{pad_visible(get_ordinal(det['attempt_no']), att_w)}{CLR_RESET}"
         plain_sts = _attempt_status_text(det, mode)
         txt_clr, grd_clr = _cls_colors(det['class'])
-        sts_s     = f"{txt_clr}{pad_visible(plain_sts, 24)}{CLR_RESET}"
-        grd_s     = f"{grd_clr}[{det['grade']}]{CLR_RESET}"
-        print(box_row_left(f"   {connector}  {att_s}  {sts_s}  {grd_s}", width))
- 
-    # ── Summary / outcome row ──────────────────────────────────────────────
-    print(box_row_left(_summary_outcome(last_cls, last_grade, n_att), width))
+        sts_s     = f"{txt_clr}{truncate_visible(plain_sts, status_w)}{CLR_RESET}"
+        grade_txt = f"[{det['grade']}]"
+        grd_s     = f"{grd_clr}{pad_visible(grade_txt, result_w)}{CLR_RESET}"
+        print(box_row_left(f"{code_s}  {title_s}  {att_s}  {sts_s}  {grd_s}", width))
  
  
 def print_repeated_table(rpt: list[dict], width: int):
@@ -586,8 +614,8 @@ def print_repeated_table(rpt: list[dict], width: int):
         return
  
     # Column header
-    hdr = f"{CLR_DIM}  {'Code':<10}  {'Title':<28}   {'Att':<4}  {'Status':<24}  {'Result'}{CLR_RESET}"
-    sep = f"{CLR_SEPARATOR}  {'─'*10}  {'─'*28}   {'─'*4}  {'─'*24}  {'─'*6}{CLR_RESET}"
+    hdr = f"{CLR_DIM}{'Code':<8}  {'Title':<27}  {'Attempt':<7}  {'Status':<28}  {'Result':<6}{CLR_RESET}"
+    sep = f"{CLR_SEPARATOR}{'─'*8}  {'─'*27}  {'─'*7}  {'─'*28}  {'─'*6}{CLR_RESET}"
     print(box_row_left(hdr, width))
     print(box_row_left(sep, width))
  
@@ -611,8 +639,8 @@ def print_medical_table(meds: list[dict], width: int):
         print(box_mid(width))
         return
  
-    hdr = f"{CLR_DIM}  {'Code':<10}  {'Title':<28}   {'Att':<4}  {'Status':<24}  {'Result'}{CLR_RESET}"
-    sep = f"{CLR_SEPARATOR}  {'─'*10}  {'─'*28}   {'─'*4}  {'─'*24}  {'─'*6}{CLR_RESET}"
+    hdr = f"{CLR_DIM}{'Code':<8}  {'Title':<27}  {'Attempt':<7}  {'Status':<28}  {'Result':<6}{CLR_RESET}"
+    sep = f"{CLR_SEPARATOR}{'─'*8}  {'─'*27}  {'─'*7}  {'─'*28}  {'─'*6}{CLR_RESET}"
     print(box_row_left(hdr, width))
     print(box_row_left(sep, width))
  
@@ -852,11 +880,86 @@ def print_summary(rows: list[dict]) -> str:
     return "\n".join(txt_summary) + "\n"
  
  
+def prompt_save_choice(save_options: list[str], width: int, use_interactive: bool) -> str:
+    selected_idx = 0
+
+    if use_interactive:
+        def draw_save_menu(with_bot=True):
+            sys.stdout.write(box_row_left(f"{CLR_WHITE}How would you like to save the retrieved records?{CLR_RESET}", width) + "\n")
+            sys.stdout.write(box_row(f"{CLR_DIM}Navigation: Ctrl+F Faculty · Ctrl+L Login{CLR_RESET}", width) + "\n")
+            sys.stdout.write(box_row_left("", width) + "\n")
+            for idx, opt in enumerate(save_options):
+                opt_str = f" {CLR_CYAN}❯{CLR_RESET} {CLR_WHITE}{CLR_BOLD}{opt}{CLR_RESET}" if idx == selected_idx else f"   {CLR_DIM}{opt}{CLR_RESET}"
+                sys.stdout.write(box_row_left(opt_str, width) + "\n")
+            sys.stdout.write((box_bot(width) if with_bot else box_mid(width)) + "\n")
+            sys.stdout.flush()
+
+        draw_save_menu(with_bot=True)
+        while True:
+            ch = msvcrt.getch()
+            handle_global_shortcut(ch)
+            if ch in (b'\r', b'\n'):
+                break
+            elif ch == b'\xe0':
+                ch2 = msvcrt.getch()
+                if ch2 == b'H':
+                    selected_idx = (selected_idx - 1) % len(save_options)
+                elif ch2 == b'P':
+                    selected_idx = (selected_idx + 1) % len(save_options)
+                sys.stdout.write("\033[8A")
+                draw_save_menu(with_bot=True)
+        sys.stdout.write("\033[8A")
+        draw_save_menu(with_bot=False)
+        return str(selected_idx + 1)
+
+    print(box_row_left(f"{CLR_WHITE}How would you like to save the retrieved records?{CLR_RESET}", width))
+    print(box_row(f"{CLR_DIM}Navigation: Ctrl+F Faculty · Ctrl+L Login{CLR_RESET}", width))
+    print(box_row_left("", width))
+    for idx, opt in enumerate(save_options):
+        print(box_row_left(f"  {CLR_CYAN}[{idx+1}]{CLR_RESET}  {CLR_DIM}{opt}{CLR_RESET}", width))
+    print(box_mid(width))
+    choice = ""
+    while choice not in ("1", "2", "3", "4"):
+        choice = read_console_line(f"  {CLR_CYAN}❯ {CLR_RESET}{CLR_WHITE}Choose export option (1-4): {CLR_RESET}").strip()
+    return choice
+
+
+def apply_save_choice(choice: str, rows: list[dict], txt_summary_str: str, reg_no: str, width: int):
+    import os
+
+    safe_reg_no = re.sub(r'[\\/*?:"<>|]', "-", reg_no.strip())
+    downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+    if not os.path.exists(downloads_dir):
+        downloads_dir = os.getcwd()
+    csv_filename = os.path.join(downloads_dir, f"{safe_reg_no}.csv")
+    txt_filename = os.path.join(downloads_dir, f"{safe_reg_no}.txt")
+
+    if choice in ("1", "3"):
+        try:
+            with open(csv_filename, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+                writer.writeheader()
+                writer.writerows(rows)
+            print(box_row_left(f"{CLR_GREEN}✓{CLR_RESET}  Saved course records to {CLR_ORANGE}{csv_filename}{CLR_RESET}", width))
+        except Exception as e:
+            print(box_row_left(f"{CLR_RED}⚠  Failed to save CSV: {e}{CLR_RESET}", width))
+
+    if choice in ("2", "3"):
+        try:
+            with open(txt_filename, "w", encoding="utf-8") as f:
+                f.write(txt_summary_str)
+            print(box_row_left(f"{CLR_GREEN}✓{CLR_RESET}  Saved clean text summary to {CLR_ORANGE}{txt_filename}{CLR_RESET}", width))
+        except Exception as e:
+            print(box_row_left(f"{CLR_RED}⚠  Failed to save text summary: {e}{CLR_RESET}", width))
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
  
 def main():
+    global START_AT_LOGIN
+
     if len(sys.argv) > 1 and sys.argv[1].lower() in ('-v', '--version', 'version'):
-        print("Uniscore CLI V1.2")
+        print("Uniscore CLI V1.3")
         sys.exit(0)
  
     init_ansi()
@@ -864,66 +967,77 @@ def main():
     use_interactive = HAS_MSVCRT
  
     while True:
-        print()
-        print_logo()
-        print()
- 
-        # Welcome card
-        print(box_top(WIDTH))
-        print(box_row(f"{CLR_CYAN}{CLR_BOLD}Welcome to Uniscore CLI!{CLR_RESET}", WIDTH))
-        print(box_row(f"{CLR_DIM}University of Colombo · Uniscore V1.2{CLR_RESET}", WIDTH))
-        print(box_row(f"{CLR_DIM}Built by Kasun Vishvajith{CLR_RESET}", WIDTH))
-        print(box_bot(WIDTH))
-        print()
- 
-        # Faculty selector
-        fac_idx = 0
-        if use_interactive:
-            def draw_faculty_selector(idx):
-                selected_fac = FACULTIES[idx]
-                color = hex_color(selected_fac["color"])
-                sys.stdout.write(box_top(WIDTH, color) + "\n")
-                sys.stdout.write(box_row(f"{color}{CLR_BOLD}🏫  SELECT YOUR FACULTY{CLR_RESET}", WIDTH, color) + "\n")
-                sys.stdout.write(box_mid(WIDTH, color) + "\n")
-                sys.stdout.write(box_row(f"{CLR_DIM}Use Up/Down Arrow keys to scroll. Press Enter to select.{CLR_RESET}", WIDTH, color) + "\n")
-                sys.stdout.write(box_row("", WIDTH, color) + "\n")
-                for i, fac in enumerate(FACULTIES):
-                    fac_color = hex_color(fac["color"])
-                    item_text = f"  {fac_color}❯  {CLR_BOLD}{fac['name']}{CLR_RESET}" if i == idx else f"     {CLR_DIM}{fac['name']}{CLR_RESET}"
-                    sys.stdout.write(box_row_left(item_text, WIDTH, color) + "\n")
-                sys.stdout.write(box_row("", WIDTH, color) + "\n")
-                sys.stdout.write(box_bot(WIDTH, color) + "\n")
-                sys.stdout.flush()
- 
-            draw_faculty_selector(fac_idx)
-            while True:
-                ch = msvcrt.getch()
-                if ch in (b'\r', b'\n'):
-                    break
-                elif ch == b'\xe0':
-                    ch2 = msvcrt.getch()
-                    if ch2 in (b'H', b'K'): fac_idx = (fac_idx - 1) % len(FACULTIES)
-                    elif ch2 in (b'P', b'M'): fac_idx = (fac_idx + 1) % len(FACULTIES)
-                    sys.stdout.write("\033[16A")
-                    draw_faculty_selector(fac_idx)
-            selected_faculty = FACULTIES[fac_idx]
-            update_faculty_urls(selected_faculty)
-        else:
+        start_at_login = START_AT_LOGIN
+        START_AT_LOGIN = False
+
+        if not start_at_login:
+            print()
+            print_logo()
+            print()
+
+            # Welcome card
             print(box_top(WIDTH))
-            print(box_row(f"{CLR_CYAN}{CLR_BOLD}🏫  SELECT YOUR FACULTY / CAMPUS{CLR_RESET}", WIDTH))
-            print(box_mid(WIDTH))
-            for idx, fac in enumerate(FACULTIES):
-                print(box_row_left(f"  {CLR_CYAN}[{idx+1}]{CLR_RESET}  {CLR_WHITE}{fac['name']}{CLR_RESET}", WIDTH))
-            print(box_mid(WIDTH))
-            choice = ""
-            while not choice.isdigit() or not (1 <= int(choice) <= len(FACULTIES)):
-                choice = input(f"  {CLR_CYAN}❯ {CLR_RESET}{CLR_WHITE}Choose option (1-{len(FACULTIES)}), default 1: {CLR_RESET}").strip() or "1"
-            fac_idx          = int(choice) - 1
-            selected_faculty = FACULTIES[fac_idx]
-            update_faculty_urls(selected_faculty)
-            print(box_row(f"{CLR_GREEN}Selected: {selected_faculty['name']}{CLR_RESET}", WIDTH))
+            print(box_row(f"{CLR_CYAN}{CLR_BOLD}Welcome to Uniscore CLI!{CLR_RESET}", WIDTH))
+            print(box_row(f"{CLR_DIM}University of Colombo · Uniscore V1.3{CLR_RESET}", WIDTH))
+            print(box_row(f"{CLR_DIM}Built by Kasun Vishvajith{CLR_RESET}", WIDTH))
             print(box_bot(WIDTH))
-        print()
+            print()
+
+            # Faculty selector
+            fac_idx = 0
+            if use_interactive:
+                def draw_faculty_selector(idx):
+                    selected_fac = FACULTIES[idx]
+                    color = hex_color(selected_fac["color"])
+                    sys.stdout.write(box_top(WIDTH, color) + "\n")
+                    sys.stdout.write(box_row(f"{color}{CLR_BOLD}🏫  SELECT YOUR FACULTY{CLR_RESET}", WIDTH, color) + "\n")
+                    sys.stdout.write(box_mid(WIDTH, color) + "\n")
+                    sys.stdout.write(box_row(f"{CLR_DIM}Use Up/Down Arrow keys to scroll. Press Enter to select.{CLR_RESET}", WIDTH, color) + "\n")
+                    sys.stdout.write(box_row(f"{CLR_DIM}Navigation: Ctrl+F Faculty · Ctrl+L Login{CLR_RESET}", WIDTH, color) + "\n")
+                    for i, fac in enumerate(FACULTIES):
+                        fac_color = hex_color(fac["color"])
+                        item_text = f"  {fac_color}❯  {CLR_BOLD}{fac['name']}{CLR_RESET}" if i == idx else f"     {CLR_DIM}{fac['name']}{CLR_RESET}"
+                        sys.stdout.write(box_row_left(item_text, WIDTH, color) + "\n")
+                    sys.stdout.write(box_row("", WIDTH, color) + "\n")
+                    sys.stdout.write(box_bot(WIDTH, color) + "\n")
+                    sys.stdout.flush()
+
+                draw_faculty_selector(fac_idx)
+                while True:
+                    ch = msvcrt.getch()
+                    handle_global_shortcut(ch)
+                    if ch in (b'\r', b'\n'):
+                        break
+                    elif ch == b'\xe0':
+                        ch2 = msvcrt.getch()
+                        if ch2 in (b'H', b'K'): fac_idx = (fac_idx - 1) % len(FACULTIES)
+                        elif ch2 in (b'P', b'M'): fac_idx = (fac_idx + 1) % len(FACULTIES)
+                        sys.stdout.write("\033[16A")
+                        draw_faculty_selector(fac_idx)
+                selected_faculty = FACULTIES[fac_idx]
+                update_faculty_urls(selected_faculty)
+            else:
+                print(box_top(WIDTH))
+                print(box_row(f"{CLR_CYAN}{CLR_BOLD}🏫  SELECT YOUR FACULTY / CAMPUS{CLR_RESET}", WIDTH))
+                print(box_mid(WIDTH))
+                for idx, fac in enumerate(FACULTIES):
+                    print(box_row_left(f"  {CLR_CYAN}[{idx+1}]{CLR_RESET}  {CLR_WHITE}{fac['name']}{CLR_RESET}", WIDTH))
+                print(box_mid(WIDTH))
+                choice = ""
+                while not choice.isdigit() or not (1 <= int(choice) <= len(FACULTIES)):
+                    choice = read_console_line(f"  {CLR_CYAN}❯ {CLR_RESET}{CLR_WHITE}Choose option (1-{len(FACULTIES)}), default 1: {CLR_RESET}").strip() or "1"
+                fac_idx          = int(choice) - 1
+                selected_faculty = FACULTIES[fac_idx]
+                update_faculty_urls(selected_faculty)
+                print(box_row(f"{CLR_GREEN}Selected: {selected_faculty['name']}{CLR_RESET}", WIDTH))
+                print(box_bot(WIDTH))
+            print()
+        else:
+            print()
+            print(box_top(WIDTH))
+            print(box_row(f"{CLR_CYAN}Returning to login menu...{CLR_RESET}", WIDTH))
+            print(box_bot(WIDTH))
+            print()
  
         # Sign-in box
         print(box_top(WIDTH))
@@ -931,13 +1045,12 @@ def main():
         print(box_mid(WIDTH))
         print(box_row_left(f"{CLR_DIM}Please enter your SIS login credentials to authenticate{CLR_RESET}", WIDTH))
         print(box_row_left(f"{CLR_DIM}and securely download your course results.{CLR_RESET}", WIDTH))
+        print(box_row(f"{CLR_DIM}Navigation: Ctrl+F Faculty · Ctrl+L Login{CLR_RESET}", WIDTH))
         print(box_mid(WIDTH))
  
         reg_no = ""
         while not reg_no.strip():
-            sys.stdout.write(f"{CLR_SEPARATOR}│{CLR_RESET}  {CLR_WHITE}Registration No.:{CLR_RESET} ")
-            sys.stdout.flush()
-            reg_no = input().strip()
+            reg_no = read_console_line(f"{CLR_SEPARATOR}│{CLR_RESET}  {CLR_WHITE}Registration No.:{CLR_RESET} ").strip()
             if not reg_no:
                 sys.stdout.write("\033[A\r")
                 print(box_row_left(f"{CLR_RED}⚠  Registration number cannot be empty.{CLR_RESET}", WIDTH))
@@ -998,6 +1111,7 @@ def main():
                     draw_fail_menu(with_bot=True)
                     while True:
                         ch = msvcrt.getch()
+                        handle_global_shortcut(ch)
                         if ch in (b'\r', b'\n'): break
                         elif ch == b'\xe0':
                             ch2 = msvcrt.getch()
@@ -1016,7 +1130,7 @@ def main():
                     print(box_mid(WIDTH))
                     loop_choice = ""
                     while loop_choice not in ("1", "2"):
-                        loop_choice = input(f"  {CLR_CYAN}❯ {CLR_RESET}{CLR_WHITE}Choose option (1-2): {CLR_RESET}").strip()
+                        loop_choice = read_console_line(f"  {CLR_CYAN}❯ {CLR_RESET}{CLR_WHITE}Choose option (1-2): {CLR_RESET}").strip()
  
                 if loop_choice == "2":
                     print(box_row(f"{CLR_RED}Exiting Uniscore. Goodbye!{CLR_RESET}", WIDTH))
@@ -1090,66 +1204,8 @@ def main():
             "Save both CSV & TXT Summary",
             "Do not save anything",
         ]
-        selected_idx = 0
- 
-        if use_interactive:
-            def draw_save_menu(with_bot=True):
-                sys.stdout.write(box_row_left(f"{CLR_WHITE}How would you like to save the retrieved records?{CLR_RESET}", WIDTH) + "\n")
-                sys.stdout.write(box_row_left("", WIDTH) + "\n")
-                for idx, opt in enumerate(save_options):
-                    opt_str = f" {CLR_CYAN}❯{CLR_RESET} {CLR_WHITE}{CLR_BOLD}{opt}{CLR_RESET}" if idx == selected_idx else f"   {CLR_DIM}{opt}{CLR_RESET}"
-                    sys.stdout.write(box_row_left(opt_str, WIDTH) + "\n")
-                sys.stdout.write((box_bot(WIDTH) if with_bot else box_mid(WIDTH)) + "\n")
-                sys.stdout.flush()
- 
-            draw_save_menu(with_bot=True)
-            while True:
-                ch = msvcrt.getch()
-                if ch in (b'\r', b'\n'): break
-                elif ch == b'\xe0':
-                    ch2 = msvcrt.getch()
-                    if ch2 == b'H': selected_idx = (selected_idx - 1) % len(save_options)
-                    elif ch2 == b'P': selected_idx = (selected_idx + 1) % len(save_options)
-                    sys.stdout.write("\033[7A")
-                    draw_save_menu(with_bot=True)
-            sys.stdout.write("\033[7A")
-            draw_save_menu(with_bot=False)
-            choice = str(selected_idx + 1)
-        else:
-            print(box_row_left(f"{CLR_WHITE}How would you like to save the retrieved records?{CLR_RESET}", WIDTH))
-            print(box_row_left("", WIDTH))
-            for idx, opt in enumerate(save_options):
-                print(box_row_left(f"  {CLR_CYAN}[{idx+1}]{CLR_RESET}  {CLR_DIM}{opt}{CLR_RESET}", WIDTH))
-            print(box_mid(WIDTH))
-            choice = ""
-            while choice not in ("1", "2", "3", "4"):
-                choice = input(f"  {CLR_CYAN}❯ {CLR_RESET}{CLR_WHITE}Choose export option (1-4): {CLR_RESET}").strip()
- 
-        import os
-        safe_reg_no   = re.sub(r'[\\/*?:"<>|]', "-", reg_no.strip())
-        downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
-        if not os.path.exists(downloads_dir):
-            downloads_dir = os.getcwd()
-        csv_filename = os.path.join(downloads_dir, f"{safe_reg_no}.csv")
-        txt_filename = os.path.join(downloads_dir, f"{safe_reg_no}.txt")
- 
-        if choice in ("1", "3"):
-            try:
-                with open(csv_filename, "w", newline="", encoding="utf-8") as f:
-                    writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-                    writer.writeheader()
-                    writer.writerows(rows)
-                print(box_row_left(f"{CLR_GREEN}✓{CLR_RESET}  Saved course records to {CLR_ORANGE}{csv_filename}{CLR_RESET}", WIDTH))
-            except Exception as e:
-                print(box_row_left(f"{CLR_RED}⚠  Failed to save CSV: {e}{CLR_RESET}", WIDTH))
- 
-        if choice in ("2", "3"):
-            try:
-                with open(txt_filename, "w", encoding="utf-8") as f:
-                    f.write(txt_summary_str)
-                print(box_row_left(f"{CLR_GREEN}✓{CLR_RESET}  Saved clean text summary to {CLR_ORANGE}{txt_filename}{CLR_RESET}", WIDTH))
-            except Exception as e:
-                print(box_row_left(f"{CLR_RED}⚠  Failed to save text summary: {e}{CLR_RESET}", WIDTH))
+        choice = prompt_save_choice(save_options, WIDTH, use_interactive)
+        apply_save_choice(choice, rows, txt_summary_str, reg_no, WIDTH)
  
         # Post-session loop menu
         print(box_mid(WIDTH))
@@ -1157,11 +1213,12 @@ def main():
             "View Repeated Courses",
             "View Medical Courses",
             "View Grade Distribution",
+            "Back to Save Options",
             "Sign in with a different account",
             "Visit Developer's Portfolio",
             "Exit Uniscore",
         ]
-        _LOOP_LINES  = 9
+        _LOOP_LINES  = 11
         session_action = None
  
         while session_action is None:
@@ -1170,6 +1227,7 @@ def main():
             if use_interactive:
                 def draw_loop_menu(with_bot=True):
                     sys.stdout.write(box_row_left(f"{CLR_WHITE}Session complete. What would you like to do next?{CLR_RESET}", WIDTH) + "\n")
+                    sys.stdout.write(box_row(f"{CLR_DIM}Navigation: Ctrl+F Faculty · Ctrl+L Login{CLR_RESET}", WIDTH) + "\n")
                     sys.stdout.write(box_row_left("", WIDTH) + "\n")
                     for idx, opt in enumerate(loop_options):
                         opt_str = f" {CLR_CYAN}❯{CLR_RESET} {CLR_WHITE}{CLR_BOLD}{opt}{CLR_RESET}" if idx == loop_idx else f"   {CLR_DIM}{opt}{CLR_RESET}"
@@ -1180,6 +1238,7 @@ def main():
                 draw_loop_menu(with_bot=True)
                 while True:
                     ch = msvcrt.getch()
+                    handle_global_shortcut(ch)
                     if ch in (b'\r', b'\n'): break
                     elif ch == b'\xe0':
                         ch2 = msvcrt.getch()
@@ -1192,13 +1251,14 @@ def main():
                 loop_choice = str(loop_idx + 1)
             else:
                 print(box_row_left(f"{CLR_WHITE}Session complete. What would you like to do next?{CLR_RESET}", WIDTH))
+                print(box_row(f"{CLR_DIM}Navigation: Ctrl+F Faculty · Ctrl+L Login{CLR_RESET}", WIDTH))
                 print(box_row_left("", WIDTH))
                 for idx, opt in enumerate(loop_options):
                     print(box_row_left(f"  {CLR_CYAN}[{idx+1}]{CLR_RESET}  {CLR_DIM}{opt}{CLR_RESET}", WIDTH))
                 print(box_mid(WIDTH))
                 loop_choice = ""
-                while loop_choice not in ("1", "2", "3", "4", "5", "6"):
-                    loop_choice = input(f"  {CLR_CYAN}❯ {CLR_RESET}{CLR_WHITE}Choose option (1-6): {CLR_RESET}").strip()
+                while loop_choice not in ("1", "2", "3", "4", "5", "6", "7"):
+                    loop_choice = read_console_line(f"  {CLR_CYAN}❯ {CLR_RESET}{CLR_WHITE}Choose option (1-7): {CLR_RESET}").strip()
  
             # ── Handle choice ──────────────────────────────────────────────────
             if loop_choice == "1":
@@ -1214,9 +1274,15 @@ def main():
                 print(box_mid(WIDTH))
  
             elif loop_choice == "4":
-                session_action = "restart"
+                print(box_mid(WIDTH))
+                choice = prompt_save_choice(save_options, WIDTH, use_interactive)
+                apply_save_choice(choice, rows, txt_summary_str, reg_no, WIDTH)
+                print(box_mid(WIDTH))
  
             elif loop_choice == "5":
+                session_action = "login"
+ 
+            elif loop_choice == "6":
                 import webbrowser
                 try:
                     webbrowser.open("https://kasun-vishvajith.github.io/Portfolio/")
@@ -1227,7 +1293,7 @@ def main():
                         f"Link: https://kasun-vishvajith.github.io/Portfolio/{CLR_RESET}", WIDTH))
                 print(box_mid(WIDTH))
  
-            else:  # "6"
+            else:  # "7"
                 session_action = "exit"
  
         if session_action == "exit":
@@ -1235,6 +1301,12 @@ def main():
             print(box_bot(WIDTH))
             print()
             safe_exit(0)
+        elif session_action == "login":
+            START_AT_LOGIN = True
+            print(box_row(f"{CLR_CYAN}Returning to login menu...{CLR_RESET}", WIDTH))
+            print(box_bot(WIDTH))
+            print()
+            time.sleep(0.8)
         else:
             print(box_row(f"{CLR_CYAN}Resetting console and starting new session...{CLR_RESET}", WIDTH))
             print(box_bot(WIDTH))
@@ -1243,5 +1315,16 @@ def main():
  
  
 if __name__ == "__main__":
-    main()
+    while True:
+        try:
+            main()
+            break
+        except NavigationRequest as nav:
+            START_AT_LOGIN = (nav.target == "login")
+            print()
+            if nav.target == "login":
+                print(f"{CLR_CYAN}↩ Returning to login menu...{CLR_RESET}")
+            else:
+                print(f"{CLR_CYAN}↩ Returning to faculty selector...{CLR_RESET}")
+            time.sleep(0.4)
  

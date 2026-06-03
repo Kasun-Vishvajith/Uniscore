@@ -56,8 +56,8 @@ Special rules apply for courses with medical submissions:
 ## 📦 How to Run
 
 ### Standalone Executable (Windows)
-1. Run **`uniscore v1.3.exe`** from the `dist/` directory.
-2. *If flagged by Windows Smart App Control: Right-click `uniscore v1.3.exe` ➔ Properties ➔ Check **Unblock** ➔ Apply.*
+1. Run **`uniscore v1.4.exe`** from the `dist/` directory.
+2. *If flagged by Windows Smart App Control: Right-click `uniscore v1.4.exe` ➔ Properties ➔ Check **Unblock** ➔ Apply.*
 
 ### Run from Source
 ```bash
