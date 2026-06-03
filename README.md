@@ -27,7 +27,7 @@ A professional command-line interface (CLI) academic dashboard and grade scraper
 ### Run from Source
 ```bash
 pip install requests beautifulsoup4 pillow
-python uniscore_v1.0.py
+python uniscore.py
 ```
 Or run **`Run-Uniscore.bat`**.
 
