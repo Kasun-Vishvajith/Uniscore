@@ -29,6 +29,30 @@ A professional command-line interface (CLI) academic dashboard and grade scraper
 
 ---
 
+## 📐 Academic Calculation Rules
+
+Uniscore applies official University of Colombo academic regulations to calculate GPAs, map resits, and track course attempts:
+
+### 1. Grading Scale & Classification
+Courses are classified based on their grades:
+*   **Passing Grades:** `A+`, `A`, `A-`, `B+`, `B`, `B-`, `C+`, `C` (along with non-GPA passes `S`, `H`, `M`).
+*   **Failing Grades:** `C-`, `D+`, `D`, `E` (along with `AB` for Absent).
+*   **Medical Certificate (MC):** Considered an approved medical attempt.
+*   **GPV Mapping:** Grade Point Values (GPV) are parsed directly from the UoC SIS portal.
+
+### 2. Repeat Conditions
+When a course unit is repeated (due to an initial fail or absent grade, and not a medical):
+*   **Active Attempt Only:** Only the final/latest attempt is considered active and contributes credits/GPA weights. All previous attempts are voided (assigned `0.0` credits/GPV) to avoid duplicate weighting.
+*   **GPA Capping:** Standard repeated courses that achieve a passing grade are capped at a maximum GPV of **`2.0`** (equivalent to a grade of `C`), even if the subsequent attempt scored higher.
+
+### 3. Medical Conditions
+Special rules apply for courses with medical submissions:
+*   **Outstanding Medical:** If the latest attempt is graded `MC` and not yet re-sat, the course is marked as *Outstanding Medical* with a temporary GPV of `0.0` (which does not count as a fail, but does not award passing credit).
+*   **Resolved Medical:** If there is a subsequent attempt after an `MC`, the medical attempt is marked as *Resolved* (voided), and the subsequent attempt takes full credit and GPV **without** the standard `2.0` GPV capping rule.
+*   **Resit Distinction:** Attempts following an initial `MC` grade are processed as medical resits rather than standard repeats.
+
+---
+
 ## 📦 How to Run
 
 ### Standalone Executable (Windows)
