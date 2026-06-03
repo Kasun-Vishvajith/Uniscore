@@ -51,8 +51,28 @@ def get_display_width(s: str) -> int:
     hyperlink_escape = re.compile(r'\033\]8;.*?\033\\')
     clean_s = ansi_escape.sub("", s)
     clean_s = hyperlink_escape.sub("", clean_s)
+    
     width = 0
-    for char in clean_s:
+    for idx, char in enumerate(clean_s):
+        if char == '\ufe0f':
+            continue
+        
+        # Check if this character is followed by U+FE0F (VS16)
+        has_vs16 = (idx + 1 < len(clean_s) and clean_s[idx + 1] == '\ufe0f')
+        
+        if char == '♻':
+            width += 2
+            continue
+        if char == '⚡':
+            width += 2
+            continue
+        if char == '⚠':
+            if has_vs16:
+                width += 2
+            else:
+                width += 1
+            continue
+            
         eaw = unicodedata.east_asian_width(char)
         if eaw in ('W', 'F'):
             width += 2
@@ -60,13 +80,20 @@ def get_display_width(s: str) -> int:
             # Box-drawing characters and Block Elements (U+2500 to U+259F) should be counted as 1 cell
             if 0x2500 <= ord(char) <= 0x259f:
                 width += 1
-            elif char in ("✓", "✔", "·"):
+            elif char in ("✓", "✔", "·", "✗", "✘"):
                 width += 1
             else:
                 width += 2
         else:
             width += 1
     return width
+
+
+def pad_visible(plain_text: str, target_width: int) -> str:
+    """Pad plain text to target_width using get_display_width to support unicode/emojis."""
+    w = get_display_width(plain_text)
+    padding = max(0, target_width - w)
+    return plain_text + (" " * padding)
 
 
 def print_logo():
@@ -88,7 +115,7 @@ def print_logo():
         # Row 7
         {0: "#922b21", 1: "#c0392b", 8: "#7b241c"}
     ]
-    width = 64
+    width = 90
     logo_width = 18  # 9 columns * 2 characters each
     padding = (width - logo_width) // 2
     for row in logo_data:
@@ -287,9 +314,54 @@ def box_row_split(left_content: str, right_content: str, width: int) -> str:
     )
 
 
+def resolve_course_attempts(rows: list[dict]) -> list[dict]:
+    """
+    Applies academic grade and credit calculation logic rules:
+    - Rule 1: Medical Attempt gets GPV = 0.0 if not re-sat (no subsequent attempt).
+    - Rule 2: Medical Attempt negated (voided) if there is any subsequent attempt.
+    - Rule 3 & 4: Only the final/active attempt contributes credits/GPA weight.
+    - Repeat Cap: Capping standard repeated passing attempts at 2.0 GPV.
+    """
+    from collections import defaultdict
+    course_map = defaultdict(list)
+    for idx, row in enumerate(rows):
+        code = row.get("Course Unit", "").strip()
+        if code:
+            course_map[code].append((idx, row))
+            
+    resolved_rows = [dict(row) for row in rows]
+    for code, atts in course_map.items():
+        n = len(atts)
+        had_fail = False
+        for i, (idx, row) in enumerate(atts):
+            grade = row.get("Grade", "").strip().upper()
+            is_last = (i == n - 1)
+            
+            resolved_rows[idx]["_is_voided"] = False
+            resolved_rows[idx]["_gpv_override"] = None
+            resolved_rows[idx]["_credits_override"] = None
+            
+            if is_last:
+                if grade == 'MC':
+                    resolved_rows[idx]["_gpv_override"] = 0.0
+                elif had_fail:
+                    if classify_grade(grade) == 'pass':
+                        orig_gpv = float(row.get("GPV", 0.0) or 0.0)
+                        if orig_gpv > 2.0:
+                            resolved_rows[idx]["_gpv_override"] = 2.0
+            else:
+                resolved_rows[idx]["_is_voided"] = True
+                resolved_rows[idx]["_credits_override"] = 0.0
+                
+            if classify_grade(grade) in ('fail', 'absent'):
+                had_fail = True
+                
+    return resolved_rows
+
+
 def print_summary(rows: list[dict]) -> str:
     """Print a structured GPA summary and return a clean borderless text summary string."""
-    WIDTH = 64  # Total box width
+    WIDTH = 90  # Total box width
     output_lines = []
 
     def output(line):
@@ -334,7 +406,9 @@ def print_summary(rows: list[dict]) -> str:
     levels = defaultdict(lambda: defaultdict(list))
     seen_sections = set()
 
-    for row in rows:
+    resolved_rows = resolve_course_attempts(rows)
+
+    for row in resolved_rows:
         code    = row.get("Course Unit", "")
         grade   = row.get("Grade", "")
         section = row.get("Section", "")
@@ -342,16 +416,28 @@ def print_summary(rows: list[dict]) -> str:
 
         if "enhancement" in section.lower() or "enchancement" in section.lower():
             continue
-        if grade in ('mc', 'MC', 'S', 'H', 'U', 'W', 'I', '--', ''):
+        if row.get("_is_voided"):
+            continue
+        if grade in ('S', 'H', 'U', 'W', 'I', '--', ''):
+            continue
+        if grade.upper() == 'MC' and row.get("_is_voided"):
             continue
         try:
             gpv_val = row.get("GPV")
-            if gpv_val in ("", None, "--"):
+            if row.get("_gpv_override") is not None:
+                gpv = row["_gpv_override"]
+            elif gpv_val in ("", None, "--"):
                 continue
-            gpv  = float(gpv_val)
-            cred = float(row.get("Credits", 0) or 0)
+            else:
+                gpv = float(gpv_val)
+
+            if row.get("_credits_override") is not None:
+                cred = row["_credits_override"]
+            else:
+                cred = float(row.get("Credits", 0) or 0)
+
             level = row.get("Level", "?")
-            if cred > 0:
+            if cred > 0 or (grade.upper() == 'MC' and not row.get("_is_voided")):
                 sem = infer_semester(code, section, row)
                 levels[level][sem].append((gpv, cred))
         except ValueError:
@@ -529,15 +615,23 @@ def classify_grade(grade: str) -> str:
     return 'pending'  # --, '', W, I, U, etc.
 
 
+def get_ordinal(n: int) -> str:
+    if 11 <= (n % 100) <= 13:
+        suffix = 'th'
+    else:
+        suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+    return f"{n}{suffix}"
+
+
 def find_repeated_courses(rows: list[dict]) -> list[dict]:
     """
-    Find courses whose Course Unit code appears more than once.
-    Returns a list of dicts: {code, title, attempts, grades, status}
-    Status is one of: 'completed', 'outstanding', 'pending'
+    Find courses whose Course Unit code appears more than once and are standard repeats (not medical).
+    If the first attempt was a medical attempt (MC), it's a medical resit, not a repeat.
     """
     from collections import defaultdict
+    resolved_rows = resolve_course_attempts(rows)
     course_map: dict[str, list] = defaultdict(list)
-    for row in rows:
+    for row in resolved_rows:
         code = row.get('Course Unit', '').strip()
         if code:
             course_map[code].append(row)
@@ -546,7 +640,21 @@ def find_repeated_courses(rows: list[dict]) -> list[dict]:
     for code, attempts in course_map.items():
         if len(attempts) < 2:
             continue
+        first_grade = attempts[0].get('Grade', '').strip().upper()
+        if first_grade == 'MC':
+            continue  # Medical resit, not a standard repeat
+            
         title  = attempts[0].get('Course Title', code)
+        attempt_details = []
+        for idx, att in enumerate(attempts):
+            grade = att.get('Grade', '').strip()
+            cls_val = classify_grade(grade)
+            attempt_details.append({
+                'attempt_no': idx + 1,
+                'grade': grade,
+                'class': cls_val,
+                'is_voided': att.get('_is_voided', False)
+            })
         grades = [r.get('Grade', '').strip() for r in attempts]
         cls    = [classify_grade(g) for g in grades]
         if 'pass' in cls:
@@ -558,36 +666,60 @@ def find_repeated_courses(rows: list[dict]) -> list[dict]:
         result.append({
             'code': code, 'title': title,
             'attempts': len(attempts), 'grades': grades, 'status': status,
+            'details': attempt_details,
         })
     return result
 
 
-def find_outstanding_medicals(rows: list[dict]) -> list[dict]:
+def find_medical_courses(rows: list[dict]) -> list[dict]:
     """
-    Find MC-graded courses that have NOT been resolved with a subsequent passing grade.
-    Returns a list of dicts: {code, title, grades}
+    Find all courses with at least one MC attempt.
+    Returns details of all attempts so they can be displayed as outstanding/resolved.
     """
     from collections import defaultdict
+    resolved_rows = resolve_course_attempts(rows)
     course_map: dict[str, list] = defaultdict(list)
-    for row in rows:
+    for row in resolved_rows:
         code = row.get('Course Unit', '').strip()
         if code:
             course_map[code].append(row)
 
-    outstanding = []
+    result = []
     for code, attempts in course_map.items():
         grades = [r.get('Grade', '').strip() for r in attempts]
-        has_mc   = any(g.upper() == 'MC' for g in grades)
-        has_pass = any(classify_grade(g) == 'pass' for g in grades)
-        if has_mc and not has_pass:
-            title = attempts[0].get('Course Title', code)
-            outstanding.append({'code': code, 'title': title, 'grades': grades})
-    return outstanding
+        has_mc = any(g.upper() == 'MC' for g in grades)
+        if not has_mc:
+            continue
+            
+        title = attempts[0].get('Course Title', code)
+        attempt_details = []
+        for idx, att in enumerate(attempts):
+            grade = att.get('Grade', '').strip()
+            cls_val = classify_grade(grade)
+            attempt_details.append({
+                'attempt_no': idx + 1,
+                'grade': grade,
+                'class': cls_val,
+                'is_voided': att.get('_is_voided', False)
+            })
+        
+        latest_grade = attempts[-1].get('Grade', '').strip().upper()
+        if latest_grade == 'MC':
+            status = 'outstanding'
+        else:
+            status = 'resolved'
+            
+        result.append({
+            'code': code, 'title': title,
+            'attempts': len(attempts), 'grades': grades, 'status': status,
+            'details': attempt_details,
+        })
+    return result
 
 
 def main():
     init_ansi()
-    WIDTH = 64
+    WIDTH = 90
 
     use_interactive = HAS_MSVCRT
 
@@ -788,9 +920,10 @@ def main():
         # Cohesive menu inside the same box!
         print(box_mid(WIDTH))
 
+        safe_reg_no_menu = re.sub(r'[\\/*?:"<>|]', "-", reg_no.strip())
         options = [
-            "Save as CSV database (results.csv)",
-            "Save as TXT Summary report (summary.txt)",
+            f"Save as CSV database ({safe_reg_no_menu}.csv)",
+            f"Save as TXT Summary report ({safe_reg_no_menu}.txt)",
             "Save both CSV & TXT Summary",
             "Do not save anything"
         ]
@@ -844,24 +977,33 @@ def main():
                 if choice not in ("1", "2", "3", "4"):
                     print(f"  {CLR_RED}⚠  Invalid choice. Please enter 1, 2, 3, or 4.{CLR_RESET}")
 
+        import os
+        safe_reg_no = re.sub(r'[\\/*?:"<>|]', "-", reg_no.strip())
+        downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+        if not os.path.exists(downloads_dir):
+            downloads_dir = os.getcwd()
+            
+        csv_filename = os.path.join(downloads_dir, f"{safe_reg_no}.csv")
+        txt_filename = os.path.join(downloads_dir, f"{safe_reg_no}.txt")
+
         save_csv_flag = choice in ("1", "3")
         save_txt_flag = choice in ("2", "3")
 
         if save_csv_flag:
             try:
-                with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
+                with open(csv_filename, "w", newline="", encoding="utf-8") as f:
                     writer = csv.DictWriter(f, fieldnames=rows[0].keys())
                     writer.writeheader()
                     writer.writerows(rows)
-                print(box_row_left(f"{CLR_GREEN}✓{CLR_RESET}  Saved course records to {CLR_ORANGE}{OUTPUT_FILE}{CLR_RESET}", WIDTH))
+                print(box_row_left(f"{CLR_GREEN}✓{CLR_RESET}  Saved course records to {CLR_ORANGE}{csv_filename}{CLR_RESET}", WIDTH))
             except Exception as e:
                 print(box_row_left(f"{CLR_RED}⚠  Failed to save CSV: {e}{CLR_RESET}", WIDTH))
 
         if save_txt_flag:
             try:
-                with open("summary.txt", "w", encoding="utf-8") as f:
+                with open(txt_filename, "w", encoding="utf-8") as f:
                     f.write(txt_summary_str)
-                print(box_row_left(f"{CLR_GREEN}✓{CLR_RESET}  Saved clean text summary to {CLR_ORANGE}summary.txt{CLR_RESET}", WIDTH))
+                print(box_row_left(f"{CLR_GREEN}✓{CLR_RESET}  Saved clean text summary to {CLR_ORANGE}{txt_filename}{CLR_RESET}", WIDTH))
             except Exception as e:
                 print(box_row_left(f"{CLR_RED}⚠  Failed to save text summary: {e}{CLR_RESET}", WIDTH))
 
@@ -870,8 +1012,8 @@ def main():
         print(box_mid(WIDTH))
 
         loop_options = [
-            "View repeated / resit courses",
-            "View outstanding medicals",
+            "View Repeated",
+            "View Medicals",
             "Sign in with a different account",
             "Visit Developer's Portfolio",
             "Exit Uniscore",
@@ -928,9 +1070,9 @@ def main():
                 while loop_choice not in ("1", "2", "3", "4", "5"):
                     loop_choice = input(f"  {CLR_CYAN}\u276f {CLR_RESET}{CLR_WHITE}Choose option (1-5): {CLR_RESET}").strip()
 
-            # \u2500\u2500 Handle choice \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+            # ── Handle choice ─────────────────────────────────────────────────────
             if loop_choice == "1":
-                # Repeated / resit courses \u2014 printed inline inside open box
+                # Repeated / resit courses — printed inline inside open box
                 rpt = find_repeated_courses(rows)
                 print(box_row(f"{CLR_ORANGE}{CLR_BOLD}\u267b\ufe0f  REPEATED / RESIT COURSES{CLR_RESET}", WIDTH))
                 print(box_mid(WIDTH))
@@ -938,42 +1080,107 @@ def main():
                     print(box_row_left(
                         f"{CLR_GREEN}\u2713{CLR_RESET}  {CLR_DIM}No repeated courses detected.{CLR_RESET}", WIDTH))
                 else:
-                    hdr = f"{CLR_DIM}{'Code':<10}  {'Title':<24}  {'Att':>3}  {'Status'}{CLR_RESET}"
+                    hdr = f"{CLR_DIM}{'Code':<8}  {'Title':<20}  {'Att':>3}  {'Status':<28}  {'Result':<9}{CLR_RESET}"
                     print(box_row_left(hdr, WIDTH))
-                    sep = f"{CLR_SEPARATOR}{'\u2500'*10}  {'\u2500'*24}  {'\u2500'*3}  {'\u2500'*16}{CLR_RESET}"
+                    sep = f"{CLR_SEPARATOR}{'\u2500'*8}  {'\u2500'*20}  {'\u2500'*3}  {'\u2500'*28}  {'\u2500'*9}{CLR_RESET}"
                     print(box_row_left(sep, WIDTH))
                     for r in rpt:
-                        code_s  = f"{CLR_CYAN}{r['code']:<10}{CLR_RESET}"
-                        title_s = f"{CLR_WHITE}{r['title'][:24]:<24}{CLR_RESET}"
-                        att_s   = f"{CLR_DIM}{r['attempts']}x{CLR_RESET}"
-                        if r['status'] == 'completed':
-                            sts_s = f"{CLR_GREEN}\u2713 Completed{CLR_RESET}"
-                        elif r['status'] == 'pending':
-                            sts_s = f"{CLR_YELLOW}\u23f3 Pending{CLR_RESET}"
-                        else:
-                            sts_s = f"{CLR_RED}\u26a0 Outstanding{CLR_RESET}"
-                        grd_s = f"  {CLR_DIM}[{', '.join(r['grades'])}]{CLR_RESET}"
-                        print(box_row_left(f"{code_s}  {title_s}  {att_s}  {sts_s}{grd_s}", WIDTH))
+                        for det in r['details']:
+                            att_val = get_ordinal(det['attempt_no'])
+                            att_s   = f"{CLR_DIM}{att_val:>3}{CLR_RESET}"
+                            is_voided = det.get('is_voided', False)
+                            void_suffix_plain = " (Voided)" if is_voided else ""
+                            
+                            if det['class'] == 'pass':
+                                plain_status = f"✓ Completed{void_suffix_plain}"
+                                sts_s = f"{CLR_GREEN}{pad_visible(plain_status, 28)}{CLR_RESET}"
+                                code_s = f"{CLR_GREEN}{r['code']:<8}{CLR_RESET}"
+                            elif det['class'] == 'medical':
+                                plain_status = f"\u26a0\ufe0f Medical{void_suffix_plain}"
+                                sts_s = f"{CLR_BLUE}{pad_visible(plain_status, 28)}{CLR_RESET}"
+                                code_s = f"{CLR_BLUE}{r['code']:<8}{CLR_RESET}"
+                            elif det['class'] == 'pending':
+                                plain_status = f"⏳ Pending{void_suffix_plain}"
+                                sts_s = f"{CLR_YELLOW}{pad_visible(plain_status, 28)}{CLR_RESET}"
+                                code_s = f"{CLR_YELLOW}{r['code']:<8}{CLR_RESET}"
+                            else:
+                                plain_status = f"✗ Repeat{void_suffix_plain}"
+                                sts_s = f"{CLR_RED}{pad_visible(plain_status, 28)}{CLR_RESET}"
+                                code_s = f"{CLR_RED}{r['code']:<8}{CLR_RESET}"
+                            
+                            title_s = f"{CLR_WHITE}{r['title'][:20]:<20}{CLR_RESET}"
+                            
+                            plain_grd = f"[{det['grade']}]"
+                            padded_grd = f"{plain_grd:<9}"
+                            if det['class'] == 'pass':
+                                grd_s = f"{CLR_GREEN}{padded_grd}{CLR_RESET}"
+                            elif det['class'] == 'medical':
+                                grd_s = f"{CLR_BLUE}{padded_grd}{CLR_RESET}"
+                            elif det['class'] == 'pending':
+                                grd_s = f"{CLR_YELLOW}{padded_grd}{CLR_RESET}"
+                            else:
+                                grd_s = f"{CLR_RED}{padded_grd}{CLR_RESET}"
+
+                            print(box_row_left(f"{code_s}  {title_s}  {att_s}  {sts_s}  {grd_s}", WIDTH))
                 print(box_mid(WIDTH))
 
             elif loop_choice == "2":
-                # Outstanding medicals \u2014 printed inline inside open box
-                meds = find_outstanding_medicals(rows)
-                print(box_row(f"{CLR_RED}{CLR_BOLD}\U0001f3e5  OUTSTANDING MEDICALS{CLR_RESET}", WIDTH))
+                # Medical / Aegrotat Attempts — printed inline inside open box
+                meds = find_medical_courses(rows)
+                print(box_row(f"{CLR_BLUE}{CLR_BOLD}🏥  MEDICAL / RESIT COURSES{CLR_RESET}", WIDTH))
                 print(box_mid(WIDTH))
                 if not meds:
                     print(box_row_left(
-                        f"{CLR_GREEN}\u2713{CLR_RESET}  {CLR_DIM}No outstanding medicals. All MCs resolved.{CLR_RESET}", WIDTH))
+                        f"{CLR_GREEN}✓{CLR_RESET}  {CLR_DIM}No medical attempts recorded.{CLR_RESET}", WIDTH))
                 else:
-                    hdr = f"{CLR_DIM}{'Code':<10}  {'Title':<30}  {'Grades'}{CLR_RESET}"
+                    hdr = f"{CLR_DIM}{'Code':<8}  {'Title':<20}  {'Att':>3}  {'Status':<28}  {'Result':<9}{CLR_RESET}"
                     print(box_row_left(hdr, WIDTH))
-                    sep = f"{CLR_SEPARATOR}{'\u2500'*10}  {'\u2500'*30}  {'\u2500'*12}{CLR_RESET}"
+                    sep = f"{CLR_SEPARATOR}{'\u2500'*8}  {'\u2500'*20}  {'\u2500'*3}  {'\u2500'*28}  {'\u2500'*9}{CLR_RESET}"
                     print(box_row_left(sep, WIDTH))
                     for m in meds:
-                        code_s  = f"{CLR_CYAN}{m['code']:<10}{CLR_RESET}"
-                        title_s = f"{CLR_WHITE}{m['title'][:30]:<30}{CLR_RESET}"
-                        grd_s   = f"{CLR_RED}{', '.join(m['grades'])}{CLR_RESET}"
-                        print(box_row_left(f"{code_s}  {title_s}  {grd_s}", WIDTH))
+                        for det in m['details']:
+                            att_val = get_ordinal(det['attempt_no'])
+                            att_s   = f"{CLR_DIM}{att_val:>3}{CLR_RESET}"
+                            is_voided = det.get('is_voided', False)
+                            void_suffix_plain = " (Voided)" if is_voided else ""
+                            
+                            if det['class'] == 'medical':
+                                if is_voided:
+                                    plain_status = f"\u26a0\ufe0f Resolved Medical{void_suffix_plain}"
+                                    sts_s = f"{CLR_DIM}{pad_visible(plain_status, 28)}{CLR_RESET}"
+                                    code_s = f"{CLR_BLUE}{m['code']:<8}{CLR_RESET}"
+                                    grd_s = f"{CLR_DIM}[{det['grade']}]{CLR_RESET}"
+                                else:
+                                    plain_status = f"\u26a0\ufe0f Outstanding Medical{void_suffix_plain}"
+                                    sts_s = f"{CLR_RED}{pad_visible(plain_status, 28)}{CLR_RESET}"
+                                    code_s = f"{CLR_BLUE}{m['code']:<8}{CLR_RESET}"
+                                    grd_s = f"{CLR_RED}[{det['grade']}]{CLR_RESET}"
+                            else:
+                                if det['class'] == 'pass':
+                                    plain_status = f"✓ Completed (Resit){void_suffix_plain}"
+                                    sts_s = f"{CLR_GREEN}{pad_visible(plain_status, 28)}{CLR_RESET}"
+                                    code_s = f"{CLR_GREEN}{m['code']:<8}{CLR_RESET}"
+                                else:
+                                    plain_status = f"✗ Resit Attempt{void_suffix_plain}"
+                                    sts_s = f"{CLR_YELLOW}{pad_visible(plain_status, 28)}{CLR_RESET}"
+                                    code_s = f"{CLR_YELLOW}{m['code']:<8}{CLR_RESET}"
+                                    
+                            title_s = f"{CLR_WHITE}{m['title'][:20]:<20}{CLR_RESET}"
+                            
+                            plain_grd = f"[{det['grade']}]"
+                            padded_grd = f"{plain_grd:<9}"
+                            if det['class'] == 'medical':
+                                if is_voided:
+                                    grd_s = f"{CLR_DIM}{padded_grd}{CLR_RESET}"
+                                else:
+                                    grd_s = f"{CLR_RED}{padded_grd}{CLR_RESET}"
+                            else:
+                                if det['class'] == 'pass':
+                                    grd_s = f"{CLR_GREEN}{padded_grd}{CLR_RESET}"
+                                else:
+                                    grd_s = f"{CLR_YELLOW}{padded_grd}{CLR_RESET}"
+
+                            print(box_row_left(f"{code_s}  {title_s}  {att_s}  {sts_s}  {grd_s}", WIDTH))
                 print(box_mid(WIDTH))
 
             elif loop_choice == "3":
