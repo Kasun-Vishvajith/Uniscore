@@ -13,6 +13,7 @@ A professional command-line interface (CLI) academic dashboard and grade scraper
   - Highlights repeated/resit courses and completion status.
   - Identifies unresolved medical (MC) course units.
   - Separate tracking for non-GPA enhancement courses.
+  - Visualizes academic grade distributions via colored, gradient-styled horizontal bar charts.
 - **Data Export**: Saves your raw results to `results.csv` and a readable summary to `summary.txt`.
 
 ---
