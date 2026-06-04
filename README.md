@@ -73,4 +73,15 @@ Your credentials and scraped grades are handled strictly locally and transmitted
 
 ---
 
+## ⚖️ Legal Disclaimer & License
+
+This application is **open-source software** provided "as is" under the **MIT License**. 
+
+**Disclaimer of Liability:**
+* **No Affiliation**: This app is not endorsed by, affiliated with, or officially connected to the University of Colombo (UoC) or its Student Information System (SIS) administrators.
+* **Use at Your Own Risk**: The developer assumes absolute zero responsibility or liability for any issues, inaccuracies, data lockouts, account suspensions, or damages resulting from the use of this software. 
+* **Calculation Verification**: GPA and attempt resolutions calculated by this tool are for informational purposes only. Official university transcript records remain the sole source of truth.
+
+---
+
 *Built with 💜 by **[Kasun Vishvajith](https://kasun-vishvajith.github.io/Portfolio/)***
